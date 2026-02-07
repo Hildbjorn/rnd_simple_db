@@ -68,7 +68,7 @@ class RnDAdmin(admin.ModelAdmin):
             return format_html(
                 '<strong>Контракт:</strong> {}<br>'
                 '<strong>Тип:</strong> {}<br>'
-                '<a href="{}">Редактировать контракт</a>',
+                '<a href="{}" style="margin-top: 12px; display: inline-block; padding: 6px 15px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; font-size: 14px;">✎ Редактировать контракт</a><br>',
                 obj.contract.number,
                 obj.contract.type.name if obj.contract.type else "Не указан",
                 url
@@ -81,18 +81,18 @@ class RnDAdmin(admin.ModelAdmin):
         if obj.contract:
             tech_specs = obj.contract.technical_specifications.all()
             if tech_specs.exists():
-                html = '<strong>Технические задания:</strong><br>'
+                html = '<strong>Техническое задание:</strong><br>'
                 for spec in tech_specs:
                     url = reverse('admin:rnd_technicalspecification_change', args=[spec.id])
                     status = "✓ АКТИВНО" if spec.is_active else "✗ НЕАКТИВНО"
                     html += format_html(
                         '- {} {}: {}<br>'
-                        '&nbsp;&nbsp;<a href="{}">Редактировать ТЗ</a><br>',
+                        '<a href="{}" style="margin-top: 12px; display: inline-block; padding: 6px 15px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; font-size: 14px;">✎ Редактировать ТЗ</a><br>',
                         status, spec.code, spec.title, url
                     )
                 return format_html(html)
         return "Технические задания не найдены"
-    get_tech_spec_info.short_description = 'Технические задания'
+    get_tech_spec_info.short_description = 'Техническое задание'
     
     def get_contract_number(self, obj):
         if obj.contract:
@@ -185,15 +185,15 @@ class ContractAdmin(admin.ModelAdmin):
         """Отображает информацию о технических заданиях."""
         tech_specs = obj.technical_specifications.all()
         if tech_specs.exists():
-            html = '<strong>Технические задания:</strong><br>'
+            html = '<strong>Техническое задание:</strong><br>'
             for spec in tech_specs:
                 url = reverse('admin:rnd_technicalspecification_change', args=[spec.id])
                 status = "✓ АКТИВНО" if spec.is_active else "✗ НЕАКТИВНО"
                 html += format_html(
                     '- {} {}: {}<br>'
-                    '&nbsp;&nbsp;<a href="{}">Редактировать</a><br>',
+                    '<a href="{}" style="margin-top: 12px; display: inline-block; padding: 6px 15px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; font-size: 14px;">✎ Редактировать ТЗ</a><br>',
                     status, spec.code, spec.title, url
                 )
             return format_html(html)
         return "Технические задания не найдены"
-    get_tech_specs_info.short_description = 'Технические задания'
+    get_tech_specs_info.short_description = 'Техническое задание'
