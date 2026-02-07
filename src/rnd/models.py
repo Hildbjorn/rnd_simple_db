@@ -62,6 +62,9 @@ class Contract(models.Model):
         verbose_name_plural = _('Государственные контракты / Договоры')
         ordering = ['number']
 
+
+
+
 class RnDType(models.Model):
     """
     Типы НИОКР согласно классификации.
@@ -95,11 +98,16 @@ class RnDType(models.Model):
         ordering = ['id']
 
 
-class RnD(models.Model):
+class TechnicalSpecification(models.Model):
     """
-    Основная модель для хранения информации 
-    о научно-исследовательских и опытно-конструкторских работах (НИОКР).
+    Модель для хранения технических заданий и их изменений.
     """
+    
+    type = models.ForeignKey(RnDType,
+                                            on_delete=models.CASCADE,
+                                            verbose_name='Тип НИОКР',
+                                            null=True,
+                                            related_name='rnd_types')
     
     code = models.CharField(max_length=255,
                                             verbose_name=_('Шифр работы'),
@@ -115,22 +123,66 @@ class RnD(models.Model):
                                              help_text=_('Наименование темы работы в соответствии с государственным контрактом или договором')
                                              )
     
-    type = models.ForeignKey(RnDType,
-                                            on_delete=models.CASCADE,
-                                            verbose_name='Тип НИОКР',
-                                            null=True,
-                                            related_name='rnd_type')
+    content = models.TextField(verbose_name=_('Содержание технического задания'),
+                                                    null=True,
+                                                    blank=True,
+                                                    help_text=_('Полное содержание технического задания')
+                                                    )
+    
+    created_at = models.DateField(verbose_name=_('Дата создания'),
+                                                    auto_now_add=True)
+    
+    updated_at = models.DateField(verbose_name=_('Дата обновления'),
+                                                    auto_now=True)
     
     contract = models.ForeignKey(Contract,
                                                 on_delete=models.CASCADE,
-                                                verbose_name='ГК / договор',
+                                                verbose_name=_('ГК / договор'),
                                                 null=True,
-                                                related_name='rnd_contract')
+                                                related_name='technical_specifications',
+                                                help_text=_('Договор, к которому относится техническое задание'))
+    
+    is_active = models.BooleanField(verbose_name=_('Актуальная версия'),
+                                                        default=True,
+                                                        help_text=_('Отметка, является ли эта версия актуальной'))
+    
+    previous_version = models.ForeignKey('self',
+                                                            on_delete=models.SET_NULL,
+                                                            verbose_name=_('Предыдущая версия'),
+                                                            null=True,
+                                                            blank=True,
+                                                            related_name='next_versions',
+                                                            help_text=_('Ссылка на предыдущую версию ТЗ'))
     
     def __str__(self):
-        return self.code
+        return f'{self.type} шифр "{self.code}"'
     
+    class Meta:
+        verbose_name = _('Техническое задание')
+        verbose_name_plural = _('Технические задания')
+        ordering = ['code', '-created_at']
+
+
+class RnD(models.Model):
+    """
+    Основная модель для хранения информации 
+    о научно-исследовательских 
+    и опытно-конструкторских работах (НИОКР).
+    """
+    
+    technical_specification = models.ForeignKey(TechnicalSpecification,
+                                                                on_delete=models.CASCADE,
+                                                                verbose_name='Техническое задание',
+                                                                null=True,
+                                                                related_name='rnd_specifications',
+                                                                help_text=_('Техническое задание, на основе которого выполняется НИОКР'))
+
+    def __str__(self):
+        if self.technical_specification:
+            return f'{self.technical_specification.type if self.technical_specification.type else 'Без типа'} шифр "{self.technical_specification.code}"'
+        return f"НИОКР №{self.id}"
+
     class Meta:
         verbose_name = _('НИОКР')
         verbose_name_plural = _('НИОКР')
-        ordering = ['code']
+        ordering = ['technical_specification__code']

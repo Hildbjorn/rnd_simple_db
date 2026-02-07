@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Contract, ContractType, RnD, RnDType
+from .models import Contract, ContractType, RnD, RnDType, TechnicalSpecification
 
 @admin.register(ContractType)
 class ContractTypeAdmin(admin.ModelAdmin):
@@ -20,8 +20,14 @@ class RnDTypeAdmin(admin.ModelAdmin):
     
     list_display = ('name', 'short_name', 'description')
 
+@admin.register(TechnicalSpecification)
+class TechnicalSpecificationAdmin(admin.ModelAdmin):
+    model = TechnicalSpecification
+    
+    list_display = ('type','code', 'title')
+
 @admin.register(RnD)
 class RnDAdmin(admin.ModelAdmin):
     model = RnD
     
-    list_display = ('type', 'code', 'title', 'contract')
+    list_display = ('technical_specification', )
