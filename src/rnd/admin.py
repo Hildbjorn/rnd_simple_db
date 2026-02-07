@@ -1,3 +1,11 @@
 from django.contrib import admin
 
-# Register your models here.
+from .models import RnD, RnDType
+
+@admin.register(RnDType)
+class RnDTypeAdmin(admin.ModelAdmin):
+    model = RnDType
+
+@admin.register(RnD)
+class RnDAdmin(admin.ModelAdmin):
+    model = RnD
