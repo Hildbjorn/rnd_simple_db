@@ -1,199 +1,294 @@
+"""
+Административный интерфейс для системы управления контрактами и НИОКР.
+"""
 from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
-from .models import Contract, ContractType, RnD, RnDTask, RnDType, TechnicalSpecification
+from django.utils.translation import gettext_lazy as _
+from .models import (
+    Contract, ContractType, RnD, RnDTask, RnDType, TechnicalSpecification
+)
 
 
 class RnDTaskInline(admin.TabularInline):
-    """
-    Inline для задач технического задания.
-    """
+    """Inline для отображения задач технического задания."""
     model = RnDTask
-    extra = 1
+    extra = 0
+    min_num = 1
     ordering = ['order']
-    verbose_name = "Задача работы"
-    verbose_name_plural = "Задачи работы"
-
-
-@admin.register(TechnicalSpecification)
-class TechnicalSpecificationAdmin(admin.ModelAdmin):
-    model = TechnicalSpecification
-    
-    list_display = ('type', 'code', 'title', 'contract', 'is_active')
-    list_filter = ('type', 'contract', 'is_active')
-    search_fields = ('code', 'title', 'purpose', 'contract__number')
-    inlines = [RnDTaskInline]
-    fieldsets = (
-        ('Основная информация', {
-            'fields': ('contract', 'type', 'code', 'title')
-        }),
-        ('Цель работы', {
-            'fields': ('purpose',)
-        }),
-        ('Версионность', {
-            'fields': ('is_active', 'previous_version')
-        }),
-        ('Даты', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
-    )
-    readonly_fields = ('created_at', 'updated_at')
-
-
-@admin.register(RnD)
-class RnDAdmin(admin.ModelAdmin):
-    """
-    Основная админка для НИОКР.
-    """
-    model = RnD
-    
-    # Поля для отображения в форме редактирования НИОКР
-    fields = ('contract', 'get_contract_info', 'get_tech_spec_info')
-    readonly_fields = ('get_contract_info', 'get_tech_spec_info')
-    
-    # Настраиваем отображение списка НИОКР
-    list_display = ('get_rnd_type', 'get_rnd_code', 'get_rnd_title', 'get_contract_number', )
-    list_display_links = ('get_rnd_type', 'get_rnd_code', 'get_rnd_title', 'get_contract_number')
-    list_filter = ('contract__type', 'contract__technical_specifications__type')
-    search_fields = ('contract__number', 
-                     'contract__technical_specifications__code', 
-                     'contract__technical_specifications__title',
-                     'contract__technical_specifications__purpose')
-    
-    def get_contract_info(self, obj):
-        """Отображает информацию о контракте с ссылкой на редактирование."""
-        if obj.contract:
-            url = reverse('admin:rnd_contract_change', args=[obj.contract.id])
-            return format_html(
-                '<strong>Контракт:</strong> {}<br>'
-                '<strong>Тип:</strong> {}<br>'
-                '<a href="{}" style="margin-top: 12px; display: inline-block; padding: 6px 15px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; font-size: 14px;">✎ Редактировать контракт</a><br>',
-                obj.contract.number,
-                obj.contract.type.name if obj.contract.type else "Не указан",
-                url
-            )
-        return "Контракт не выбран"
-    get_contract_info.short_description = 'Информация о контракте'
-    
-    def get_tech_spec_info(self, obj):
-        """Отображает информацию о технических заданиях."""
-        if obj.contract:
-            tech_specs = obj.contract.technical_specifications.all()
-            if tech_specs.exists():
-                html = '<strong>Техническое задание:</strong><br>'
-                for spec in tech_specs:
-                    url = reverse('admin:rnd_technicalspecification_change', args=[spec.id])
-                    status = "✓ АКТИВНО" if spec.is_active else "✗ НЕАКТИВНО"
-                    html += format_html(
-                        '- {} {}: {}<br>'
-                        '<a href="{}" style="margin-top: 12px; display: inline-block; padding: 6px 15px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; font-size: 14px;">✎ Редактировать ТЗ</a><br>',
-                        status, spec.code, spec.title, url
-                    )
-                return format_html(html)
-        return "Технические задания не найдены"
-    get_tech_spec_info.short_description = 'Техническое задание'
-    
-    def get_contract_number(self, obj):
-        if obj.contract:
-            return obj.contract.number
-        return "-"
-    get_contract_number.short_description = Contract._meta.get_field('number').verbose_name
-    get_contract_number.admin_order_field = 'contract__number'
-    
-    def get_rnd_type(self, obj):
-        active_spec = obj.get_active_technical_specification()
-        if active_spec and active_spec.type:
-            return active_spec.type.name
-        return "-"
-    get_rnd_type.short_description = RnDType._meta.verbose_name
-    get_rnd_type.admin_order_field = 'contract__technical_specifications__type__name'
-    
-    def get_rnd_code(self, obj):
-        active_spec = obj.get_active_technical_specification()
-        if active_spec and active_spec.code:
-            return active_spec.code
-        return "-"
-    get_rnd_code.short_description = TechnicalSpecification._meta.get_field('code').verbose_name
-    get_rnd_code.admin_order_field = 'contract__technical_specifications__code'
-    
-    def get_rnd_title(self, obj):
-        active_spec = obj.get_active_technical_specification()
-        if active_spec and active_spec.title:
-            return active_spec.title
-        return "-"
-    get_rnd_title.short_description = TechnicalSpecification._meta.get_field('title').verbose_name
-    get_rnd_title.admin_order_field = 'contract__technical_specifications__title'
-    
-    def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """Настраиваем виджеты для ForeignKey полей."""
-        if db_field.name == "contract":
-            # Показываем только контракты, не привязанные к другим НИОКР
-            kwargs["queryset"] = Contract.objects.filter(rnd_contracts__isnull=True) | Contract.objects.filter(rnd_contracts=request.resolver_match.kwargs.get('object_id'))
-        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+    fields = ['order', 'description', 'is_completed']
+    verbose_name = _('Задача')
+    verbose_name_plural = _('Задачи')
 
 
 @admin.register(ContractType)
 class ContractTypeAdmin(admin.ModelAdmin):
-    model = ContractType
-    list_display = ('short_name', 'name', 'description')
+    """Административный интерфейс для типов контрактов."""
+    
+    list_display = ('short_name', 'name', 'contracts_count')
+    search_fields = ('name', 'short_name')
+    list_display_links = ('short_name', 'name')
+    
+    def contracts_count(self, obj):
+        """Количество контрактов данного типа."""
+        return obj.contracts.count()
+    contracts_count.short_description = _('Количество контрактов')
 
 
 @admin.register(RnDType)
 class RnDTypeAdmin(admin.ModelAdmin):
-    model = RnDType
-    list_display = ('name', 'short_name', 'description')
+    """Административный интерфейс для типов НИОКР."""
+    
+    list_display = ('short_name', 'name', 'tech_specs_count')
+    search_fields = ('name', 'short_name')
+    list_display_links = ('short_name', 'name')
+    
+    def tech_specs_count(self, obj):
+        """Количество технических заданий данного типа."""
+        return obj.technical_specifications.count()
+    tech_specs_count.short_description = _('Количество ТЗ')
+
+
+class TechnicalSpecificationInline(admin.TabularInline):
+    """Inline для отображения технических заданий контракта."""
+    model = TechnicalSpecification
+    extra = 0
+    fields = ['type', 'code', 'title', 'is_active', 'created_at']
+    readonly_fields = ['created_at']
+    show_change_link = True
+    verbose_name = _('Техническое задание')
+    verbose_name_plural = _('Технические задания')
 
 
 @admin.register(Contract)
 class ContractAdmin(admin.ModelAdmin):
-    model = Contract
-    list_display = ('number', 'type', 'get_rnd_info', 'get_tech_specs_count')
-    list_filter = ('type',)
+    """Административный интерфейс для контрактов."""
+    
+    list_display = ('number', 'type', 'created_at', 'rnd_link', 'tech_specs_count')
+    list_filter = ('type', 'created_at')
     search_fields = ('number',)
+    list_select_related = ('type',)
+    
     fieldsets = (
-        ('Основная информация', {
+        (_('Основная информация'), {
             'fields': ('type', 'number')
         }),
-        ('Связанные объекты', {
-            'fields': ('get_rnd_info', 'get_tech_specs_info'),
+        (_('Даты'), {
+            'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
-    readonly_fields = ('get_rnd_info', 'get_tech_specs_info')
     
-    def get_rnd_info(self, obj):
-        """Отображает информацию о НИОКР, связанных с этим контрактом."""
-        rnds = obj.rnd_contracts.all()
-        if rnds.exists():
-            html = '<strong>НИОКР:</strong><br>'
-            for rnd in rnds:
-                url = reverse('admin:rnd_rnd_change', args=[rnd.id])
-                html += format_html(
-                    '- <a href="{}">НИОКР #{}</a><br>',
-                    url, rnd.id
-                )
-            return format_html(html)
-        return "НИОКР не найдены"
-    get_rnd_info.short_description = 'Связанные НИОКР'
+    readonly_fields = ('created_at', 'updated_at')
     
-    def get_tech_specs_count(self, obj):
-        return obj.technical_specifications.count()
-    get_tech_specs_count.short_description = 'Кол-во ТЗ'
+    def get_inlines(self, request, obj):
+        """
+        Возвращаем inline только для существующих объектов.
+        """
+        if obj:  # obj существует при редактировании
+            return [TechnicalSpecificationInline]
+        return []  # Пустой список для создания нового
     
-    def get_tech_specs_info(self, obj):
-        """Отображает информацию о технических заданиях."""
-        tech_specs = obj.technical_specifications.all()
-        if tech_specs.exists():
-            html = '<strong>Техническое задание:</strong><br>'
-            for spec in tech_specs:
-                url = reverse('admin:rnd_technicalspecification_change', args=[spec.id])
-                status = "✓ АКТИВНО" if spec.is_active else "✗ НЕАКТИВНО"
-                html += format_html(
-                    '- {} {}: {}<br>'
-                    '<a href="{}" style="margin-top: 12px; display: inline-block; padding: 6px 15px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; font-size: 14px;">✎ Редактировать ТЗ</a><br>',
-                    status, spec.code, spec.title, url
-                )
-            return format_html(html)
-        return "Технические задания не найдены"
-    get_tech_specs_info.short_description = 'Техническое задание'
+    def rnd_link(self, obj):
+        """Ссылка на связанный НИОКР."""
+        if hasattr(obj, 'rnd'):
+            url = reverse('admin:rnd_rnd_change', args=[obj.rnd.id])
+            return format_html(
+                '<a href="{}">Перейти к НИОКР</a>',
+                url
+            )
+        return "-"
+    rnd_link.short_description = _('НИОКР')
+    
+    def tech_specs_count(self, obj):
+        """Количество технических заданий."""
+        count = obj.technical_specifications.count()
+        url = reverse('admin:rnd_technicalspecification_changelist') + f'?contract__id__exact={obj.id}'
+        return format_html(
+            '<a href="{}">{}</a>',
+            url, count
+        )
+    tech_specs_count.short_description = _('Технические задания')
+
+
+@admin.register(TechnicalSpecification)
+class TechnicalSpecificationAdmin(admin.ModelAdmin):
+    """Административный интерфейс для технических заданий."""
+    
+    list_display = ('code', 'title', 'contract', 'type', 'is_active', 'created_at')
+    list_filter = ('type', 'is_active', 'contract__type')
+    search_fields = ('code', 'title', 'purpose', 'contract__number')
+    list_select_related = ('contract', 'type')
+    inlines = [RnDTaskInline]
+    
+    fieldsets = (
+        (_('Основная информация'), {
+            'fields': ('contract', 'type', 'code', 'title')
+        }),
+        (_('Содержание'), {
+            'fields': ('purpose',)
+        }),
+        (_('Версионность'), {
+            'fields': ('is_active', 'previous_version')
+        }),
+        (_('Даты'), {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = ('created_at', 'updated_at')
+    
+    def get_queryset(self, request):
+        """Оптимизация запросов."""
+        return super().get_queryset(request).select_related(
+            'contract', 'type', 'previous_version'
+        )
+
+
+@admin.register(RnD)
+class RnDAdmin(admin.ModelAdmin):
+    """Административный интерфейс для НИОКР."""
+    
+    list_display = (
+        'contract_number',
+        'tech_spec_code',
+        'tech_spec_title',
+        'status_display',
+        'created_at'
+    )
+    
+    list_filter = ('status', 'technical_specification__type', 'contract__type')
+    search_fields = (
+        'contract__number',
+        'technical_specification__code',
+        'technical_specification__title'
+    )
+    
+    fieldsets = (
+        (_('Основная информация'), {
+            'fields': ('contract', 'technical_specification', 'status')
+        }),
+        (_('Связанные объекты'), {
+            'fields': ('contract_info', 'tech_spec_info'),
+            'classes': ('collapse',)
+        }),
+        (_('Даты'), {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = (
+        'contract_info',
+        'tech_spec_info',
+        'created_at',
+        'updated_at'
+    )
+    
+    def get_queryset(self, request):
+        """Оптимизация запросов."""
+        return super().get_queryset(request).select_related(
+            'contract',
+            'contract__type',
+            'technical_specification',
+            'technical_specification__type'
+        )
+    
+    def contract_number(self, obj):
+        """Номер контракта."""
+        return obj.contract.number
+    contract_number.short_description = _('Номер контракта')
+    contract_number.admin_order_field = 'contract__number'
+    
+    def tech_spec_code(self, obj):
+        """Шифр технического задания."""
+        return obj.technical_specification.code
+    tech_spec_code.short_description = _('Шифр работы')
+    tech_spec_code.admin_order_field = 'technical_specification__code'
+    
+    def tech_spec_title(self, obj):
+        """Тема технического задания."""
+        return obj.technical_specification.title
+    tech_spec_title.short_description = _('Тема работы')
+    tech_spec_title.admin_order_field = 'technical_specification__title'
+    
+    def status_display(self, obj):
+        """Отображение статуса с цветом."""
+        status_colors = {
+            'draft': 'gray',
+            'in_progress': 'orange',
+            'completed': 'green',
+            'cancelled': 'red',
+        }
+        color = status_colors.get(obj.status, 'black')
+        return format_html(
+            '<span style="color: {};">{}</span>',
+            color, obj.get_status_display()
+        )
+    status_display.short_description = _('Статус')
+    
+    def contract_info(self, obj):
+        """Информация о контракте."""
+        contract = obj.contract
+        url = reverse('admin:rnd_contract_change', args=[contract.id])
+        
+        return format_html(
+            '''
+            <div style="padding: 10px; background: #f8f9fa; border-radius: 4px;">
+                <strong>Контракт:</strong> {}<br>
+                <strong>Тип:</strong> {}<br>
+                <a href="{}" class="button">Редактировать контракт</a>
+            </div>
+            ''',
+            contract.number,
+            contract.type.short_name if contract.type else "-",
+            url
+        )
+    contract_info.short_description = _('Информация о контракте')
+    
+    def tech_spec_info(self, obj):
+        """Информация о техническом задании."""
+        tech_spec = obj.technical_specification
+        url = reverse('admin:rnd_technicalspecification_change', args=[tech_spec.id])
+        
+        return format_html(
+            '''
+            <div style="padding: 10px; background: #f8f9fa; border-radius: 4px;">
+                <strong>Техническое задание:</strong><br>
+                <strong>Шифр:</strong> {}<br>
+                <strong>Тема:</strong> {}<br>
+                <strong>Тип работ:</strong> {}<br>
+                <strong>Статус:</strong> {}<br>
+                <a href="{}" class="button">Редактировать ТЗ</a>
+            </div>
+            ''',
+            tech_spec.code,
+            tech_spec.title,
+            tech_spec.type.short_name if tech_spec.type else "-",
+            "Активно" if tech_spec.is_active else "Неактивно",
+            url
+        )
+    tech_spec_info.short_description = _('Информация о ТЗ')
+
+
+@admin.register(RnDTask)
+class RnDTaskAdmin(admin.ModelAdmin):
+    """Административный интерфейс для задач НИОКР."""
+    
+    list_display = (
+        'order',
+        'short_description',
+        'technical_specification',
+        'is_completed',
+        'created_at'
+    )
+    
+    list_filter = ('is_completed', 'technical_specification__contract')
+    search_fields = ('description', 'technical_specification__code')
+    list_select_related = ('technical_specification',)
+    
+    def short_description(self, obj):
+        """Короткое описание задачи."""
+        return obj.description[:100] + "..." if len(obj.description) > 100 else obj.description
+    short_description.short_description = _('Описание')
