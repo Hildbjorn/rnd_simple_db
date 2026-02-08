@@ -1,6 +1,3 @@
-"""
-Административный интерфейс для системы управления контрактами и НИОКР.
-"""
 from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
