@@ -152,22 +152,23 @@ class RnDAdmin(admin.ModelAdmin):
     
     list_display = (
         'contract_number',
-        'tech_spec_code',
-        'tech_spec_title',
+        'code',
+        'title',
+        'type_display',
         'status_display',
         'created_at'
     )
     
-    list_filter = ('status', 'technical_specification__type', 'contract__type')
+    list_filter = ('status', 'technical_specification__type', 'technical_specification__contract__type')
     search_fields = (
-        'contract__number',
+        'technical_specification__contract__number',
         'technical_specification__code',
         'technical_specification__title'
     )
     
     fieldsets = (
         (_('Основная информация'), {
-            'fields': ('contract', 'technical_specification', 'status')
+            'fields': ('technical_specification', 'status')
         }),
         (_('Связанные объекты'), {
             'fields': ('contract_info', 'tech_spec_info'),
@@ -189,29 +190,35 @@ class RnDAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         """Оптимизация запросов."""
         return super().get_queryset(request).select_related(
-            'contract',
-            'contract__type',
             'technical_specification',
+            'technical_specification__contract',
+            'technical_specification__contract__type',
             'technical_specification__type'
         )
     
     def contract_number(self, obj):
-        """Номер контракта."""
-        return obj.contract.number
+        """Номер контракта через ТЗ."""
+        return obj.technical_specification.contract.number
     contract_number.short_description = _('Номер контракта')
-    contract_number.admin_order_field = 'contract__number'
+    contract_number.admin_order_field = 'technical_specification__contract__number'
     
-    def tech_spec_code(self, obj):
-        """Шифр технического задания."""
+    def code(self, obj):
+        """Шифр работы."""
         return obj.technical_specification.code
-    tech_spec_code.short_description = _('Шифр работы')
-    tech_spec_code.admin_order_field = 'technical_specification__code'
+    code.short_description = _('Шифр работы')
+    code.admin_order_field = 'technical_specification__code'
     
-    def tech_spec_title(self, obj):
-        """Тема технического задания."""
+    def title(self, obj):
+        """Тема работы."""
         return obj.technical_specification.title
-    tech_spec_title.short_description = _('Тема работы')
-    tech_spec_title.admin_order_field = 'technical_specification__title'
+    title.short_description = _('Тема работы')
+    title.admin_order_field = 'technical_specification__title'
+    
+    def type_display(self, obj):
+        """Тип работ."""
+        return obj.technical_specification.type.short_name
+    type_display.short_description = _('Тип работ')
+    type_display.admin_order_field = 'technical_specification__type__short_name'
     
     def status_display(self, obj):
         """Отображение статуса с цветом."""
@@ -229,8 +236,8 @@ class RnDAdmin(admin.ModelAdmin):
     status_display.short_description = _('Статус')
     
     def contract_info(self, obj):
-        """Информация о контракте."""
-        contract = obj.contract
+        """Информация о контракте через ТЗ."""
+        contract = obj.technical_specification.contract
         url = reverse('admin:rnd_contract_change', args=[contract.id])
         
         return format_html(

@@ -196,6 +196,8 @@ class TechnicalSpecification(models.Model):
     
     purpose = models.TextField(
         verbose_name=_('Цель работы'),
+        null=True,
+        blank=True,
         help_text=_('Основные цели и задачи работы')
     )
     
@@ -293,6 +295,8 @@ class RnDTask(models.Model):
     
     description = models.TextField(
         verbose_name=_('Описание задачи'),
+        null=True,
+        blank=True,
         help_text=_('Подробное описание задачи и требований к выполнению')
     )
     
@@ -330,7 +334,6 @@ class RnD(models.Model):
     Научно-исследовательская или опытно-конструкторская работа.
     
     Attributes:
-        contract (Contract): Основной контракт
         technical_specification (TechnicalSpecification): Активное ТЗ
         status (str): Статус выполнения работы
     """
@@ -342,23 +345,13 @@ class RnD(models.Model):
         ('cancelled', _('Отменена')),
     ]
     
-    contract = models.OneToOneField(
-        Contract,
-        on_delete=models.SET_NULL,
-        null=True,
-        verbose_name=_('Контракт'),
-        related_name='rnd',
-        help_text=_('Контракт, по которому ведется НИОКР'),
-        unique=True  # Один контракт = один НИОКР
-    )
-    
-    technical_specification = models.ForeignKey(
+    technical_specification = models.OneToOneField(  # Изменено с ForeignKey на OneToOneField
         TechnicalSpecification,
-        on_delete=models.SET_NULL,
-        null=True,
+        on_delete=models.PROTECT,  # Защита от удаления активного ТЗ
         verbose_name=_('Активное техническое задание'),
-        related_name='rnd_projects',
-        help_text=_('Актуальная версия технического задания для работы')
+        related_name='rnd',
+        help_text=_('Актуальная версия технического задания для работы'),
+        limit_choices_to={'is_active': True}  # Ограничиваем выбор только активными ТЗ
     )
     
     status = models.CharField(
@@ -380,22 +373,40 @@ class RnD(models.Model):
     )
     
     def __str__(self):
-        return f"НИОКР: {self.contract.number} ({self.get_status_display()})"
+        contract = self.technical_specification.contract
+        return f"НИОКР: {contract.number} ({self.get_status_display()})"
     
-    def get_active_technical_specification(self):
-        """Получение активного ТЗ."""
-        return self.contract.technical_specifications.filter(is_active=True).first()
+    @property
+    def contract(self):
+        """Свойство для доступа к контракту через ТЗ."""
+        return self.technical_specification.contract
+    
+    @property
+    def contract_number(self):
+        """Номер контракта."""
+        return self.technical_specification.contract.number
+    
+    @property
+    def code(self):
+        """Шифр работы."""
+        return self.technical_specification.code
+    
+    @property
+    def title(self):
+        """Тема работы."""
+        return self.technical_specification.title
+    
+    @property
+    def type(self):
+        """Тип работ."""
+        return self.technical_specification.type
     
     def clean(self):
         """Валидация НИОКР."""
+        # Проверяем, что ТЗ активно
         if not self.technical_specification.is_active:
             raise ValidationError({
                 'technical_specification': _('Можно выбрать только активное техническое задание')
-            })
-        
-        if self.technical_specification.contract != self.contract:
-            raise ValidationError({
-                'technical_specification': _('Техническое задание должно относиться к выбранному контракту')
             })
     
     class Meta:
@@ -403,6 +414,6 @@ class RnD(models.Model):
         verbose_name_plural = _('НИОКР')
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['contract']),
             models.Index(fields=['status']),
+            models.Index(fields=['technical_specification']),
         ]
