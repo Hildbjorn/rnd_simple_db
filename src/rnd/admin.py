@@ -1,3 +1,6 @@
+"""
+Админка для моделей.
+"""
 from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse, path
@@ -6,16 +9,15 @@ from django.contrib import messages
 from django.utils.translation import gettext_lazy as _
 from django import forms
 from django.db.models import Count
+
 from .models import (
     Contract, ContractType, RnD, RnDTask, RnDType, TechnicalSpecification,
     update_all_rnd_statuses_for_contract
 )
+from .forms import ContractForm
 
 
 class SupplementaryAgreementInline(admin.TabularInline):
-    """
-    Inline для отображения дополнительных соглашений контракта.
-    """
     model = Contract
     fk_name = 'main_contract'
     extra = 0
@@ -26,109 +28,82 @@ class SupplementaryAgreementInline(admin.TabularInline):
     verbose_name_plural = _('Дополнительные соглашения')
     
     def get_queryset(self, request):
-        """Показываем только доп. соглашения."""
         qs = super().get_queryset(request)
         return qs.filter(type__is_supplementary=True)
     
     def get_formset(self, request, obj=None, **kwargs):
-        """Настраиваем форму для inline."""
         formset = super().get_formset(request, obj, **kwargs)
-        
-        if obj and obj.pk:  # Проверяем, что объект существует и сохранен
-            # Ограничиваем выбор типа только доп. соглашениями для этого договора
+        if obj and obj.pk:
             supplementary_types = ContractType.objects.filter(
                 is_supplementary=True,
                 parent_type=obj.type
             )
-            
-            # Проверяем, существует ли поле 'type' в форме
             if 'type' in formset.form.base_fields:
                 formset.form.base_fields['type'].queryset = supplementary_types
-            
-            # Автоматически устанавливаем основной договор
             if 'main_contract' in formset.form.base_fields:
                 formset.form.base_fields['main_contract'].initial = obj
                 formset.form.base_fields['main_contract'].widget = forms.HiddenInput()
-        
         return formset
     
     def has_add_permission(self, request, obj=None):
-        """Разрешаем добавление только для сохраненных основных договоров."""
         if obj and obj.pk and not obj.type.is_supplementary:
             return True
         return False
 
 
-class ContractForm(forms.ModelForm):
-    """Форма для контракта."""
+class TechnicalSpecificationInline(admin.TabularInline):
+    model = TechnicalSpecification
+    extra = 0
+    max_num = 10
+    fields = ['contract_document', 'version', 'document', 'is_active', 'uploaded_at']
+    readonly_fields = ['uploaded_at']
+    verbose_name = _('ТЗ')
+    verbose_name_plural = _('Технические задания')
     
-    class Meta:
-        model = Contract
-        fields = '__all__'
-        widgets = {
-            'description': forms.Textarea(attrs={'rows': 3}),
-            'main_contract': forms.HiddenInput(),  # Всегда скрываем, логика в модели
-        }
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        if obj:
+            allowed_contracts = Contract.objects.filter(
+                id=obj.contract.id
+            ) | Contract.objects.filter(
+                main_contract=obj.contract,
+                type__is_supplementary=True
+            )
+            formset.form.base_fields['contract_document'].queryset = allowed_contracts
+        return formset
+
+
+class RnDTaskInline(admin.TabularInline):
+    model = RnDTask
+    extra = 0
+    max_num = 20
+    fields = ['order', 'source_specification', 'description', 'is_completed']
+    verbose_name = _('Задача')
+    verbose_name_plural = _('Задачи')
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-        # Устанавливаем начальное значение для main_contract
-        if self.instance and self.instance.pk:
-            if self.instance.type and not self.instance.type.is_supplementary:
-                # Для основных договоров устанавливаем ссылку на себя
-                self.initial['main_contract'] = self.instance
-        else:
-            # Для новых объектов скрываем поле и делаем необязательным
-            self.fields['main_contract'].required = False
-            self.fields['main_contract'].widget = forms.HiddenInput()
-            
-        # Динамически настраиваем поле type
-        if self.instance and self.instance.pk:
-            if self.instance.type and self.instance.type.is_supplementary:
-                # Для доп. соглашений показываем только соответствующие типы
-                self.fields['type'].queryset = ContractType.objects.filter(
-                    is_supplementary=True
-                )
-            else:
-                # Для основных договоров показываем только основные типы
-                self.fields['type'].queryset = ContractType.objects.filter(
-                    is_supplementary=False
-                )
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        if obj:
+            formset.form.base_fields['source_specification'].queryset = \
+                TechnicalSpecification.objects.filter(rnd=obj)
+        return formset
+
 
 @admin.register(ContractType)
 class ContractTypeAdmin(admin.ModelAdmin):
-    """Админка для типов договоров."""
-    
-    list_display = (
-        'short_name', 
-        'name', 
-        'is_supplementary_display', 
-        'parent_type_display',
-        'contracts_count'
-    )
-    
+    list_display = ('short_name', 'name', 'is_supplementary_display', 'parent_type_display', 'contracts_count')
     list_filter = ('is_supplementary',)
     search_fields = ('name', 'short_name')
     list_display_links = ('short_name', 'name')
-    
     fieldsets = (
-        (None, {
-            'fields': ('name', 'short_name', 'description')
-        }),
-        (_('Классификация'), {
-            'fields': ('is_supplementary', 'parent_type')
-        }),
+        (None, {'fields': ('name', 'short_name', 'description')}),
+        (_('Классификация'), {'fields': ('is_supplementary', 'parent_type')}),
     )
     
     def get_queryset(self, request):
-        """Оптимизируем запросы."""
-        return super().get_queryset(request).annotate(
-            contracts_count=Count('contracts')
-        )
+        return super().get_queryset(request).annotate(contracts_count=Count('contracts'))
     
     def is_supplementary_display(self, obj):
-        """Отображение типа документа."""
         if obj.is_supplementary:
             return format_html(
                 '<span style="color: #666; background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">{}</span>',
@@ -141,14 +116,10 @@ class ContractTypeAdmin(admin.ModelAdmin):
     is_supplementary_display.short_description = _('Тип')
     
     def parent_type_display(self, obj):
-        """Отображение родительского типа."""
-        if obj.parent_type:
-            return obj.parent_type.short_name
-        return "-"
+        return obj.parent_type.short_name if obj.parent_type else "-"
     parent_type_display.short_description = _('Родительский тип')
     
     def contracts_count(self, obj):
-        """Количество контрактов данного типа."""
         return obj.contracts_count
     contracts_count.short_description = _('Документов')
     contracts_count.admin_order_field = 'contracts_count'
@@ -156,71 +127,37 @@ class ContractTypeAdmin(admin.ModelAdmin):
 
 @admin.register(Contract)
 class ContractAdmin(admin.ModelAdmin):
-    """Админка для контрактов."""
-    
     form = ContractForm
     list_display = (
-        'number', 
-        'name', 
-        'type_display', 
-        'signed_date', 
-        'effective_date',
-        'status_display', 
-        'is_supplementary_display',
-        'related_documents_count'
+        'number', 'name', 'type_display', 'signed_date', 'effective_date',
+        'status_display', 'is_supplementary_display', 'related_documents_count'
     )
-    
-    list_filter = (
-        'type', 
-        'status', 
-        ('type__is_supplementary', admin.BooleanFieldListFilter),
-        'signed_date'
-    )
-    
+    list_filter = ('type', 'status', ('type__is_supplementary', admin.BooleanFieldListFilter), 'signed_date')
     search_fields = ('number', 'name', 'description')
     list_select_related = ('type', 'main_contract')
     readonly_fields = ('created_at', 'updated_at', 'contract_status_display')
     inlines = [SupplementaryAgreementInline]
     
     fieldsets = (
-        (_('Классификация'), {
-            'fields': ('type', 'main_contract')
-        }),
-        (_('Основная информация'), {
-            'fields': ('number', 'name', 'description')
-        }),
-        (_('Даты и статус'), {
-            'fields': ('signed_date', 'effective_date', 'status')
-        }),
-        (_('Документ'), {
-            'fields': ('document',),
-            'classes': ('collapse',)
-        }),
-        (_('Версии'), {
-            'fields': ('previous_version',),
-            'classes': ('collapse',)
-        }),
-        (_('Системная информация'), {
-            'fields': ('contract_status_display', 'created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        (_('Классификация'), {'fields': ('type', 'main_contract')}),
+        (_('Основная информация'), {'fields': ('number', 'name', 'description')}),
+        (_('Даты и статус'), {'fields': ('signed_date', 'effective_date', 'status')}),
+        (_('Документ'), {'fields': ('document',), 'classes': ('collapse',)}),
+        (_('Версии'), {'fields': ('previous_version',), 'classes': ('collapse',)}),
+        (_('Системная информация'), {'fields': ('contract_status_display', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
     
     def get_queryset(self, request):
-        """Оптимизируем запросы."""
         qs = super().get_queryset(request)
-        qs = qs.select_related('type', 'main_contract')
-        qs = qs.prefetch_related('related_documents')
+        qs = qs.select_related('type', 'main_contract').prefetch_related('related_documents')
         return qs.annotate(related_docs_count=Count('related_documents'))
     
     def type_display(self, obj):
-        """Отображение типа с цветом."""
         return obj.type.short_name
     type_display.short_description = _('Тип')
     type_display.admin_order_field = 'type__short_name'
     
     def is_supplementary_display(self, obj):
-        """Отображение типа документа."""
         if obj.type.is_supplementary:
             return format_html(
                 '<span style="color: #666;">{} к {}</span>',
@@ -234,12 +171,11 @@ class ContractAdmin(admin.ModelAdmin):
     is_supplementary_display.short_description = _('Вид')
     
     def status_display(self, obj):
-        """Отображение статуса с цветом."""
         status_colors = {
-            'active': '#4caf50',      # green
-            'suspended': '#ff9800',   # orange
-            'completed': '#2196f3',   # blue
-            'terminated': '#f44336',  # red
+            'active': '#4caf50',
+            'suspended': '#ff9800',
+            'completed': '#2196f3',
+            'terminated': '#f44336',
         }
         color = status_colors.get(obj.status, '#000')
         return format_html(
@@ -249,7 +185,6 @@ class ContractAdmin(admin.ModelAdmin):
     status_display.short_description = _('Статус')
     
     def contract_status_display(self, obj):
-        """Отображение статуса основного договора."""
         if obj.is_main_contract:
             return format_html(
                 '<strong>{}:</strong> {}',
@@ -267,7 +202,6 @@ class ContractAdmin(admin.ModelAdmin):
     contract_status_display.short_description = _('Статусы')
     
     def related_documents_count(self, obj):
-        """Количество связанных документов."""
         count = obj.related_docs_count if hasattr(obj, 'related_docs_count') else obj.related_documents.count()
         if count > 0 and obj.is_main_contract:
             url = reverse('admin:rnd_contract_changelist') + f'?main_contract__id__exact={obj.id}'
@@ -276,64 +210,39 @@ class ContractAdmin(admin.ModelAdmin):
     related_documents_count.short_description = _('Доп. соглашений')
     
     def get_inlines(self, request, obj=None):
-        """Показываем inline только для сохраненных основных договоров."""
         if obj and obj.pk and not obj.type.is_supplementary:
             return [SupplementaryAgreementInline]
         return []
     
     def get_form(self, request, obj=None, **kwargs):
-        """Динамически настраиваем форму."""
         form = super().get_form(request, obj, **kwargs)
-        
         if obj and obj.type.is_supplementary:
-            # Для доп. соглашений ограничиваем выбор основного договора
-            form.base_fields['main_contract'].queryset = Contract.objects.filter(
-                type__is_supplementary=False
-            )
+            form.base_fields['main_contract'].queryset = Contract.objects.filter(type__is_supplementary=False)
         else:
-            # Для основных договоров скрываем поле main_contract
             form.base_fields['main_contract'].widget = forms.HiddenInput()
             form.base_fields['main_contract'].required = False
-        
         return form
     
     def get_urls(self):
-        """Добавляем кастомные URL."""
         urls = super().get_urls()
         custom_urls = [
-            path(
-                '<path:object_id>/sync-rnd-status/',
-                self.admin_site.admin_view(self.sync_rnd_status),
-                name='rnd_contract_sync_rnd_status',
-            ),
+            path('<path:object_id>/sync-rnd-status/', self.admin_site.admin_view(self.sync_rnd_status),
+                 name='rnd_contract_sync_rnd_status'),
         ]
         return custom_urls + urls
     
     def sync_rnd_status(self, request, object_id):
-        """Синхронизация статусов НИОКР."""
         updated_count = update_all_rnd_statuses_for_contract(object_id)
-        
         if updated_count > 0:
-            self.message_user(
-                request,
-                _('Статусы {} НИОКР успешно синхронизированы с договором').format(updated_count),
-                messages.SUCCESS
-            )
+            self.message_user(request, _('Статусы {} НИОКР успешно синхронизированы с договором').format(updated_count),
+                             messages.SUCCESS)
         else:
-            self.message_user(
-                request,
-                _('Нет НИОКР для синхронизации или статус договора не изменился'),
-                messages.WARNING
-            )
-        
-        return HttpResponseRedirect(
-            reverse('admin:rnd_contract_change', args=[object_id])
-        )
+            self.message_user(request, _('Нет НИОКР для синхронизации или статус договора не изменился'),
+                             messages.WARNING)
+        return HttpResponseRedirect(reverse('admin:rnd_contract_change', args=[object_id]))
     
     def change_view(self, request, object_id, form_url='', extra_context=None):
-        """Добавляем кнопку синхронизации."""
         extra_context = extra_context or {}
-        
         contract = self.get_object(request, object_id)
         if contract and not contract.type.is_supplementary:
             sync_url = reverse('admin:rnd_contract_sync_rnd_status', args=[object_id])
@@ -348,136 +257,52 @@ class ContractAdmin(admin.ModelAdmin):
                 sync_url,
                 _('Синхронизировать статусы НИОКР')
             )
-        
-        return super().change_view(
-            request, object_id, form_url, extra_context=extra_context
-        )
+        return super().change_view(request, object_id, form_url, extra_context=extra_context)
     
     def save_model(self, request, obj, form, change):
-        """
-        Переопределяем сохранение модели в админке.
-        """
-        if not change:  # Если это создание нового объекта
-            # Временно убираем main_contract для сохранения
+        if not change:
             main_contract = obj.main_contract
             obj.main_contract = None
-            
-            # Сохраняем объект
             super().save_model(request, obj, form, change)
-            
-            # Для основных договоров устанавливаем ссылку на себя
             if not obj.type.is_supplementary:
                 obj.main_contract = obj
                 obj.save(update_fields=['main_contract'])
             else:
-                # Для доп. соглашений возвращаем сохраненный main_contract
                 obj.main_contract = main_contract
                 obj.save(update_fields=['main_contract'])
         else:
-            # Для существующих объектов сохраняем как обычно
             super().save_model(request, obj, form, change)
     
     class Media:
-        css = {
-            'all': ('css/admin_contract.css',)
-        }
+        css = {'all': ('css/admin_contract.css',)}
+
 
 @admin.register(RnDType)
 class RnDTypeAdmin(admin.ModelAdmin):
-    """Админка для типов НИОКР."""
-    
     list_display = ('short_name', 'name', 'description_short', 'rnd_count')
     search_fields = ('name', 'short_name', 'description')
     list_display_links = ('short_name', 'name')
-    
-    fieldsets = (
-        (None, {
-            'fields': ('name', 'short_name', 'description')
-        }),
-    )
+    fieldsets = ((None, {'fields': ('name', 'short_name', 'description')}),)
     
     def get_queryset(self, request):
-        """Оптимизируем запросы."""
-        return super().get_queryset(request).annotate(
-            rnd_count=Count('rnd')
-        )
+        return super().get_queryset(request).annotate(rnd_count=Count('rnd'))
     
     def description_short(self, obj):
-        """Короткое описание."""
         if obj.description and len(obj.description) > 100:
             return f"{obj.description[:100]}..."
         return obj.description or "-"
     description_short.short_description = _('Описание')
     
     def rnd_count(self, obj):
-        """Количество НИОКР."""
         count = obj.rnd_count if hasattr(obj, 'rnd_count') else obj.rnd_set.count()
         url = reverse('admin:rnd_rnd_changelist') + f'?type__id__exact={obj.id}'
         return format_html('<a href="{}">{}</a>', url, count)
     rnd_count.short_description = _('НИОКР')
 
 
-class TechnicalSpecificationInline(admin.TabularInline):
-    """
-    Inline для технических заданий НИОКР.
-    """
-    model = TechnicalSpecification
-    extra = 0
-    max_num = 10
-    fields = ['contract_document', 'version', 'document', 'is_active', 'uploaded_at']
-    readonly_fields = ['uploaded_at']
-    verbose_name = _('ТЗ')
-    verbose_name_plural = _('Технические задания')
-    
-    def get_formset(self, request, obj=None, **kwargs):
-        """Ограничиваем выбор документов."""
-        formset = super().get_formset(request, obj, **kwargs)
-        if obj:
-            # Разрешаем только основной договор и его доп. соглашения
-            allowed_contracts = Contract.objects.filter(
-                id=obj.contract.id
-            ) | Contract.objects.filter(
-                main_contract=obj.contract,
-                type__is_supplementary=True
-            )
-            formset.form.base_fields['contract_document'].queryset = allowed_contracts
-        return formset
-
-
-class RnDTaskInline(admin.TabularInline):
-    """
-    Inline для задач НИОКР.
-    """
-    model = RnDTask
-    extra = 0
-    max_num = 20
-    fields = ['order', 'source_specification', 'description', 'is_completed']
-    verbose_name = _('Задача')
-    verbose_name_plural = _('Задачи')
-    
-    def get_formset(self, request, obj=None, **kwargs):
-        """Ограничиваем выбор ТЗ."""
-        formset = super().get_formset(request, obj, **kwargs)
-        if obj:
-            formset.form.base_fields['source_specification'].queryset = \
-                TechnicalSpecification.objects.filter(rnd=obj)
-        return formset
-
-
 @admin.register(RnD)
 class RnDAdmin(admin.ModelAdmin):
-    """Админка для НИОКР."""
-    
-    list_display = (
-        'uuid_display',
-        'code',
-        'title_short',
-        'contract_link',
-        'type_display',
-        'status_display',
-        'created_at'
-    )
-    
+    list_display = ('uuid_display', 'code', 'title_short', 'contract_link', 'type_display', 'status_display', 'created_at')
     list_filter = ('status', 'type', 'contract__type')
     search_fields = ('uuid', 'code', 'title', 'purpose', 'contract__number')
     list_select_related = ('contract', 'type', 'contract__type')
@@ -485,15 +310,9 @@ class RnDAdmin(admin.ModelAdmin):
     inlines = [TechnicalSpecificationInline, RnDTaskInline]
     
     fieldsets = (
-        (_('Идентификация'), {
-            'fields': ('uuid', 'code', 'title', 'type')
-        }),
-        (_('Договорная информация'), {
-            'fields': ('contract', 'contract_info')
-        }),
-        (_('Содержание'), {
-            'fields': ('purpose',)
-        }),
+        (_('Идентификация'), {'fields': ('uuid', 'code', 'title', 'type')}),
+        (_('Договорная информация'), {'fields': ('contract', 'contract_info')}),
+        (_('Содержание'), {'fields': ('purpose',)}),
         (_('Статус'), {
             'fields': ('status', 'last_contract_status'),
             'description': _(
@@ -503,20 +322,15 @@ class RnDAdmin(admin.ModelAdmin):
                 '<strong>Контракт расторгнут</strong> - работа прекращена из-за расторжения контракта'
             )
         }),
-        (_('Системная информация'), {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        (_('Системная информация'), {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
     
     def get_queryset(self, request):
-        """Оптимизируем запросы."""
         return super().get_queryset(request).select_related(
             'contract', 'type', 'contract__type'
         ).prefetch_related('tasks', 'technical_specifications')
     
     def uuid_display(self, obj):
-        """Отображение UUID."""
         return format_html(
             '<code style="font-size: 0.9em; background: #f5f5f5; padding: 2px 4px; border-radius: 3px;">{}</code>',
             obj.uuid
@@ -525,7 +339,6 @@ class RnDAdmin(admin.ModelAdmin):
     uuid_display.admin_order_field = 'uuid'
     
     def title_short(self, obj):
-        """Короткое название темы."""
         if len(obj.title) > 50:
             return f"{obj.title[:50]}..."
         return obj.title
@@ -533,7 +346,6 @@ class RnDAdmin(admin.ModelAdmin):
     title_short.admin_order_field = 'title'
     
     def contract_link(self, obj):
-        """Ссылка на контракт."""
         url = reverse('admin:rnd_contract_change', args=[obj.contract.id])
         return format_html(
             '<a href="{}">{}</a><br><small>{}</small>',
@@ -543,18 +355,16 @@ class RnDAdmin(admin.ModelAdmin):
     contract_link.admin_order_field = 'contract__number'
     
     def type_display(self, obj):
-        """Отображение типа работ."""
         return obj.type.short_name
     type_display.short_description = _('Тип работ')
     type_display.admin_order_field = 'type__short_name'
     
     def status_display(self, obj):
-        """Отображение статуса с цветом."""
         status_colors = {
-            'in_progress': '#4caf50',        # green
-            'suspended': '#ff9800',          # orange
-            'completed': '#2196f3',          # blue
-            'contract_terminated': '#f44336', # red
+            'in_progress': '#4caf50',
+            'suspended': '#ff9800',
+            'completed': '#2196f3',
+            'contract_terminated': '#f44336',
         }
         color = status_colors.get(obj.status, '#000')
         return format_html(
@@ -564,10 +374,8 @@ class RnDAdmin(admin.ModelAdmin):
     status_display.short_description = _('Статус')
     
     def contract_info(self, obj):
-        """Информация о контракте."""
         contract = obj.contract
         url = reverse('admin:rnd_contract_change', args=[contract.id])
-        
         return format_html(
             '''
             <div style="padding: 10px; background: #f8f9fa; border-radius: 5px; border-left: 4px solid #2196F3;">
@@ -589,59 +397,26 @@ class RnDAdmin(admin.ModelAdmin):
 
 @admin.register(TechnicalSpecification)
 class TechnicalSpecificationAdmin(admin.ModelAdmin):
-    """Админка для технических заданий."""
-    
-    list_display = (
-        'rnd_uuid_display',
-        'version_display',
-        'contract_document_link',
-        'is_active_display',
-        'file_info',
-        'uploaded_at'
-    )
-    
-    list_filter = (
-        'is_active', 
-        ('contract_document__type__is_supplementary', admin.BooleanFieldListFilter),
-        'contract_document__main_contract'
-    )
-    
-    search_fields = (
-        'rnd__uuid', 
-        'rnd__code', 
-        'rnd__title', 
-        'contract_document__number',
-        'description'
-    )
-    
+    list_display = ('rnd_uuid_display', 'version_display', 'contract_document_link', 'is_active_display', 
+                   'file_info', 'uploaded_at')
+    list_filter = ('is_active', ('contract_document__type__is_supplementary', admin.BooleanFieldListFilter), 
+                  'contract_document__main_contract')
+    search_fields = ('rnd__uuid', 'rnd__code', 'rnd__title', 'contract_document__number', 'description')
     list_select_related = ('rnd', 'contract_document', 'contract_document__type')
     readonly_fields = ('uploaded_at', 'file_path_info')
     
     fieldsets = (
-        (_('Привязка'), {
-            'fields': ('rnd', 'contract_document')
-        }),
-        (_('Техническое задание'), {
-            'fields': ('version', 'document', 'description', 'is_active')
-        }),
-        (_('Информация о файле'), {
-            'fields': ('file_path_info', 'uploaded_at'),
-            'classes': ('collapse',)
-        }),
+        (_('Привязка'), {'fields': ('rnd', 'contract_document')}),
+        (_('Техническое задание'), {'fields': ('version', 'document', 'description', 'is_active')}),
+        (_('Информация о файле'), {'fields': ('file_path_info', 'uploaded_at'), 'classes': ('collapse',)}),
     )
     
     def get_queryset(self, request):
-        """Оптимизируем запросы."""
         return super().get_queryset(request).select_related(
-            'rnd',
-            'rnd__contract',
-            'contract_document',
-            'contract_document__type',
-            'contract_document__main_contract'
+            'rnd', 'rnd__contract', 'contract_document', 'contract_document__type', 'contract_document__main_contract'
         )
     
     def rnd_uuid_display(self, obj):
-        """Отображение UUID НИОКР."""
         url = reverse('admin:rnd_rnd_change', args=[obj.rnd.id])
         return format_html(
             '''
@@ -656,7 +431,6 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
     rnd_uuid_display.admin_order_field = 'rnd__uuid'
     
     def version_display(self, obj):
-        """Отображение версии."""
         return format_html(
             '<span style="font-weight: bold; background: #e3f2fd; padding: 2px 6px; border-radius: 3px;">{}</span>',
             obj.version
@@ -664,9 +438,7 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
     version_display.short_description = _('Версия')
     
     def contract_document_link(self, obj):
-        """Ссылка на документ-основание."""
         url = reverse('admin:rnd_contract_change', args=[obj.contract_document.id])
-        
         if obj.contract_document.type.is_supplementary:
             return format_html(
                 '''
@@ -678,28 +450,17 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
                 url, obj.contract_document.number, obj.contract_document.main_contract.number
             )
         else:
-            return format_html(
-                '<a href="{}">{}</a>',
-                url, obj.contract_document.number
-            )
+            return format_html('<a href="{}">{}</a>', url, obj.contract_document.number)
     contract_document_link.short_description = _('Документ-основание')
     contract_document_link.admin_order_field = 'contract_document__number'
     
     def is_active_display(self, obj):
-        """Отображение статуса активности."""
         if obj.is_active:
-            return format_html(
-                '<span style="color: #4caf50; font-weight: bold;">✓ {}</span>',
-                _('Актуальная')
-            )
-        return format_html(
-            '<span style="color: #999;">✗ {}</span>',
-            _('Архивная')
-        )
+            return format_html('<span style="color: #4caf50; font-weight: bold;">✓ {}</span>', _('Актуальная'))
+        return format_html('<span style="color: #999;">✗ {}</span>', _('Архивная'))
     is_active_display.short_description = _('Статус')
     
     def file_info(self, obj):
-        """Информация о файле."""
         if obj.document:
             filename = obj.document.name.split('/')[-1]
             return format_html(
@@ -715,7 +476,6 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
     file_info.short_description = _('Файл')
     
     def file_path_info(self, obj):
-        """Подробная информация о пути к файлу."""
         if obj.document:
             return format_html(
                 '''
@@ -736,7 +496,6 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
         return _('Файл не загружен')
     
     def get_file_size(self, file):
-        """Получаем размер файла."""
         try:
             size = file.size
             if size < 1024:
@@ -749,7 +508,6 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
             return _('Неизвестно')
     
     def get_file_type(self, file):
-        """Определяем тип файла."""
         name = file.name.lower()
         if name.endswith('.pdf'):
             return 'PDF'
@@ -763,63 +521,25 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
 
 @admin.register(RnDTask)
 class RnDTaskAdmin(admin.ModelAdmin):
-    """Админка для задач НИОКР."""
-    
-    list_display = (
-        'rnd_info',
-        'order_display',
-        'description_short',
-        'source_specification_display',
-        'is_completed_display',
-        'created_at'
-    )
-    
-    list_filter = (
-        'is_completed', 
-        'rnd__contract',
-        'source_specification'
-    )
-    
-    search_fields = (
-        'description', 
-        'rnd__uuid', 
-        'rnd__code', 
-        'rnd__title',
-        'source_specification__version'
-    )
-    
-    list_select_related = (
-        'rnd', 
-        'source_specification',
-        'rnd__contract'
-    )
-    
+    list_display = ('rnd_info', 'order_display', 'description_short', 'source_specification_display', 
+                   'is_completed_display', 'created_at')
+    list_filter = ('is_completed', 'rnd__contract', 'source_specification')
+    search_fields = ('description', 'rnd__uuid', 'rnd__code', 'rnd__title', 'source_specification__version')
+    list_select_related = ('rnd', 'source_specification', 'rnd__contract')
     readonly_fields = ('created_at', 'updated_at')
     
     fieldsets = (
-        (_('Привязка'), {
-            'fields': ('rnd', 'source_specification', 'order')
-        }),
-        (_('Содержание задачи'), {
-            'fields': ('description', 'is_completed')
-        }),
-        (_('Системная информация'), {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        (_('Привязка'), {'fields': ('rnd', 'source_specification', 'order')}),
+        (_('Содержание задачи'), {'fields': ('description', 'is_completed')}),
+        (_('Системная информация'), {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
     
     def get_queryset(self, request):
-        """Оптимизируем запросы."""
         return super().get_queryset(request).select_related(
-            'rnd',
-            'rnd__contract',
-            'source_specification',
-            'source_specification__contract_document'
+            'rnd', 'rnd__contract', 'source_specification', 'source_specification__contract_document'
         )
     
     def rnd_info(self, obj):
-        """Информация о НИОКР."""
         url = reverse('admin:rnd_rnd_change', args=[obj.rnd.id])
         return format_html(
             '''
@@ -834,47 +554,30 @@ class RnDTaskAdmin(admin.ModelAdmin):
     rnd_info.admin_order_field = 'rnd__uuid'
     
     def order_display(self, obj):
-        """Отображение порядка."""
-        return format_html(
-            '<span style="font-weight: bold; color: #2196F3;">{}</span>',
-            obj.order
-        )
+        return format_html('<span style="font-weight: bold; color: #2196F3;">{}</span>', obj.order)
     order_display.short_description = _('№')
     order_display.admin_order_field = 'order'
     
     def description_short(self, obj):
-        """Короткое описание."""
         if len(obj.description) > 80:
             return f"{obj.description[:80]}..."
         return obj.description
     description_short.short_description = _('Описание')
     
     def source_specification_display(self, obj):
-        """Отображение источника (ТЗ)."""
         if obj.source_specification:
             url = reverse('admin:rnd_technicalspecification_change', args=[obj.source_specification.id])
-            return format_html(
-                '<a href="{}">вер.{}</a>',
-                url, obj.source_specification.version
-            )
+            return format_html('<a href="{}">вер.{}</a>', url, obj.source_specification.version)
         return format_html('<span style="color: #999;">{}</span>', _('нет'))
     source_specification_display.short_description = _('Источник (ТЗ)')
     
     def is_completed_display(self, obj):
-        """Отображение статуса выполнения."""
         if obj.is_completed:
-            return format_html(
-                '<span style="color: #4caf50; font-weight: bold;">✓ {}</span>',
-                _('Выполнена')
-            )
-        return format_html(
-            '<span style="color: #ff9800;">● {}</span>',
-            _('В работе')
-        )
+            return format_html('<span style="color: #4caf50; font-weight: bold;">✓ {}</span>', _('Выполнена'))
+        return format_html('<span style="color: #ff9800;">● {}</span>', _('В работе'))
     is_completed_display.short_description = _('Статус')
-    
 
-# Регистрируем все модели
+
 admin.site.site_header = _('Управление НИОКР')
 admin.site.site_title = _('Администрирование НИОКР')
 admin.site.index_title = _('Панель управления')
