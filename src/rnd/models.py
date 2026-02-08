@@ -8,21 +8,139 @@ from django.db.models import F
 from django.utils import timezone
 
 
+import os
+import uuid
+import re
+from django.utils import timezone
+from django.utils.text import slugify
+
+
+import os
+import uuid
+from django.utils import timezone
+
+
+class UploadPathFactory:
+    """
+    Фабрика для генерации коротких путей загрузки файлов.
+    Не требует изменения других моделей - работает с существующими методами.
+    """
+    
+    @staticmethod
+    def for_technical_specification(instance, filename):
+        """
+        Короткий путь для технических заданий.
+        Совместим с существующим методом get_upload_path в TechnicalSpecification.
+        
+        Формат: {rnd_uuid}/tech_spec/{yymmdd}/{short_uuid}.ext
+        Пример: abc12345-6789-0123-4567-89abcdef0123/tech_spec/260208/a1b2c3d4.pdf
+        """
+        # Используем короткий UUID для имени файла (8 символов)
+        file_uuid = uuid.uuid4().hex[:8]
+        file_ext = os.path.splitext(filename)[1].lower()
+        safe_filename = f"{file_uuid}{file_ext}"
+        
+        # Короткая дата (yymmdd вместо YYYY_MM_DD)
+        date_short = timezone.now().strftime('%y%m%d')
+        
+        # Получаем UUID НИОКР из instance.rnd.uuid
+        rnd_uuid = UploadPathFactory._get_rnd_uuid_safe(instance)
+        
+        # Формируем короткий путь
+        return os.path.join(
+            rnd_uuid,       # UUID НИОКР
+            'tech_spec',    # Вместо technical_specifications
+            date_short,     # Короткая дата
+            safe_filename   # Короткое имя файла
+        )
+    
+    @staticmethod
+    def for_contract_document(instance, filename):
+        """
+        Короткий путь для сканов договоров.
+        Формат: {rnd_uuid}/contracts/{yymmdd}/{short_uuid}.ext
+        
+        Пример: abc12345-6789-0123-4567-89abcdef0123/contracts/260208/e5f6g7h8.pdf
+        """
+        # Короткое имя файла
+        file_uuid = uuid.uuid4().hex[:8]
+        file_ext = os.path.splitext(filename)[1].lower()
+        safe_filename = f"{file_uuid}{file_ext}"
+        
+        # Короткая дата
+        date_short = timezone.now().strftime('%y%m%d')
+        
+        # Получаем UUID НИОКР (для договора ищем через связанные НИОКР)
+        rnd_uuid = UploadPathFactory._get_contract_rnd_uuid(instance)
+        
+        return os.path.join(
+            rnd_uuid,
+            'contracts',
+            date_short,
+            safe_filename
+        )
+    
+    @staticmethod
+    def _get_rnd_uuid_safe(instance):
+        """
+        Безопасное получение UUID НИОКР.
+        Работает с существующей структурой TechnicalSpecification.
+        """
+        try:
+            # Для TechnicalSpecification
+            if hasattr(instance, 'rnd') and instance.rnd:
+                return str(instance.rnd.uuid)
+            # Для других моделей с полем uuid
+            elif hasattr(instance, 'uuid') and instance.uuid:
+                return str(instance.uuid)
+        except:
+            pass
+        
+        # Запасной вариант
+        return 'temp_' + uuid.uuid4().hex[:8]
+    
+    @staticmethod
+    def _get_contract_rnd_uuid(instance):
+        """
+        Получаем UUID НИОКР для договора.
+        Ищем через связанные НИОКР (rnd_works).
+        """
+        try:
+            # Если это объект Contract
+            if hasattr(instance, 'rnd_works'):
+                # Берем первый связанный НИОКР
+                rnd_work = instance.rnd_works.first()
+                if rnd_work:
+                    return str(rnd_work.uuid)
+        except:
+            pass
+        
+        # Если не нашли НИОКР, используем номер договора
+        if hasattr(instance, 'number') and instance.number:
+            # Создаем псевдо-UUID из номера договора
+            import hashlib
+            hash_obj = hashlib.md5(instance.number.encode())
+            return f"doc_{hash_obj.hexdigest()[:12]}"
+        
+        # Запасной вариант
+        return 'temp_' + uuid.uuid4().hex[:8]
+
+
 class ContractType(models.Model):
     """
-    Типы договоров и документов.
+    Типы договоров.
     """
     
     name = models.CharField(
         max_length=255,
-        verbose_name=_('Тип документа (полностью)'),
-        help_text=_('Полное название типа документа')
+        verbose_name=_('Тип договора (полностью)'),
+        help_text=_('Полное название типа договора')
     )
     
     short_name = models.CharField(
         max_length=100,
-        verbose_name=_('Тип документа (кратко)'),
-        help_text=_('Краткое название типа документа для отображения в списках')
+        verbose_name=_('Тип договора (кратко)'),
+        help_text=_('Краткое название типа договора для отображения в списках')
     )
     
     is_supplementary = models.BooleanField(
@@ -45,7 +163,7 @@ class ContractType(models.Model):
         verbose_name=_('Описание'),
         blank=True,
         null=True,
-        help_text=_('Подробное описание типа документа')
+        help_text=_('Подробное описание типа договора')
     )
     
     def __str__(self):
@@ -86,7 +204,7 @@ class ContractType(models.Model):
 
 class Contract(models.Model):
     """
-    Контракт или связанный документ.
+    Контракт или связанный договор.
     """
     
     CONTRACT_STATUS_CHOICES = [
@@ -96,7 +214,7 @@ class Contract(models.Model):
         ('terminated', _('Расторгнут')),
     ]
     
-    # Связь с предыдущей версией документа
+    # Связь с предыдущей версией договора
     previous_version = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,
@@ -104,7 +222,7 @@ class Contract(models.Model):
         related_name='next_versions',
         null=True,
         blank=True,
-        help_text=_('Предыдущая версия этого документа')
+        help_text=_('Предыдущая версия этого договора')
     )
     
     # Основной договор (для дополнительных соглашений)
@@ -115,62 +233,63 @@ class Contract(models.Model):
         related_name='related_documents',
         null=True,
         blank=True,
-        help_text=_('Основной договор, к которому относится данный документ')
+        help_text=_('Основной договор, к которому относится данный договор')
     )
     
     type = models.ForeignKey(
         ContractType,
         on_delete=models.PROTECT,
-        verbose_name=_('Тип документа'),
+        verbose_name=_('Тип договора'),
         related_name='contracts',
-        help_text=_('Тип документа (договор, доп. соглашение и т.д.)')
+        help_text=_('Тип договора (договор, доп. соглашение и т.д.)')
     )
     
     number = models.CharField(
         max_length=255,
-        verbose_name=_('Номер документа'),
+        verbose_name=_('Номер договора'),
         unique=True,
-        help_text=_('Уникальный номер документа')
+        help_text=_('Уникальный номер договора')
     )
     
     name = models.CharField(
         max_length=500,
-        verbose_name=_('Наименование документа'),
-        help_text=_('Полное наименование документа'),
+        verbose_name=_('Наименование договора'),
+        help_text=_('Полное наименование договора'),
         blank=True,
         null=True
     )
     
     signed_date = models.DateField(
         verbose_name=_('Дата подписания'),
-        help_text=_('Дата подписания документа')
+        help_text=_('Дата подписания договора')
     )
     
     effective_date = models.DateField(
         verbose_name=_('Дата вступления в силу'),
-        help_text=_('Дата, с которой документ действует')
+        help_text=_('Дата, с которой договор действует')
     )
     
     status = models.CharField(
         max_length=20,
         choices=CONTRACT_STATUS_CHOICES,
         default='active',
-        verbose_name=_('Статус документа')
+        verbose_name=_('Статус договора')
     )
     
     document = models.FileField(
-        upload_to='contracts/%Y/%m/',
-        verbose_name=_('Скан документа'),
-        help_text=_('Отсканированная копия документа'),
+        upload_to=UploadPathFactory.for_contract_document,
+        verbose_name=_('Скан договора'),
+        help_text=_('Отсканированная копия договора'),
         blank=True,
-        null=True
+        null=True,
+        max_length=500,  # Увеличиваем для безопасности
     )
     
     description = models.TextField(
         verbose_name=_('Описание/комментарий'),
         blank=True,
         null=True,
-        help_text=_('Описание документа или внесенных изменений')
+        help_text=_('Описание договора или внесенных изменений')
     )
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -185,11 +304,11 @@ class Contract(models.Model):
         """Валидация контракта."""
         if not self.number or not self.number.strip():
             raise ValidationError({
-                'number': _('Номер документа обязателен для заполнения')
+                'number': _('Номер договора обязателен для заполнения')
             })
         
-        # Проверка типа документа
-        if self.type.is_supplementary:
+        # Проверка типа договора
+        if self.type and self.type.is_supplementary:
             # Для доп. соглашений должен быть указан основной договор
             if not self.main_contract:
                 raise ValidationError({
@@ -211,37 +330,53 @@ class Contract(models.Model):
                     )
                 })
         else:
-            # Основной договор не должен ссылаться на другой договор
-            if self.main_contract and self.main_contract.id != self.id:
+            # Для основных договоров
+            # Если main_contract указан, проверяем что это ссылка на себя (только для сохраненных объектов)
+            if self.main_contract and self.main_contract.id and self.main_contract.id != self.id:
                 raise ValidationError({
                     'main_contract': _('Основной договор не может ссылаться на другой договор')
                 })
-            self.main_contract = self
         
         # Проверка на циклические ссылки
         if self.previous_version and self.previous_version.id == self.id:
             raise ValidationError({
-                'previous_version': _('Документ не может ссылаться сам на себя')
+                'previous_version': _('Договор не может ссылаться сам на себя')
             })
     
     def save(self, *args, **kwargs):
         """Сохранение с дополнительной логикой."""
         self.full_clean()
-        super().save(*args, **kwargs)
+        
+        # Для основных договоров устанавливаем ссылку на себя ПОСЛЕ сохранения
+        is_new = self.pk is None
+        
+        # Сначала сохраняем объект без main_contract
+        if not self.type.is_supplementary and is_new:
+            # Временно убираем main_contract для сохранения
+            main_contract = self.main_contract
+            self.main_contract = None
+            super().save(*args, **kwargs)
+            # Теперь устанавливаем ссылку на себя
+            self.main_contract = self
+            # Сохраняем снова с обновленной ссылкой
+            super().save(update_fields=['main_contract'])
+        else:
+            # Для доп. соглашений или существующих объектов сохраняем как обычно
+            super().save(*args, **kwargs)
     
     @property
     def is_supplementary(self):
-        """Является ли документ дополнительным соглашением."""
+        """Является ли договор дополнительным соглашением."""
         return self.type.is_supplementary
     
     @property
     def is_main_contract(self):
-        """Является ли документ основным договором."""
+        """Является ли договор основным договором."""
         return not self.is_supplementary
     
     @property
     def display_name(self):
-        """Отображаемое имя документа."""
+        """Отображаемое имя договора."""
         if self.name:
             return f"{self.number} - {self.name}"
         return str(self)
@@ -254,8 +389,8 @@ class Contract(models.Model):
         return self.main_contract.status
     
     class Meta:
-        verbose_name = _('Документ')
-        verbose_name_plural = _('Документы')
+        verbose_name = _('Договор')
+        verbose_name_plural = _('Договоры')
         ordering = ['-signed_date', 'number']
         indexes = [
             models.Index(fields=['number']),
@@ -469,38 +604,15 @@ class RnD(models.Model):
 
 class TechnicalSpecification(models.Model):
     """
-    Техническое задание (файл ТЗ) с привязкой к документу.
+    Техническое задание (файл ТЗ) с привязкой к договору.
     """
     
     def get_upload_path(self, filename):
         """
-        Генерирует путь для загрузки файла ТЗ.
-        Формат: {rnd_uuid}/technical_specifications/ts/{uuid_ts_дата}/{filename}
+        Генерирует короткий путь для загрузки файла ТЗ.
+        Использует UploadPathFactory.
         """
-        if self.rnd:
-            # Получаем текущую дату в формате YYYY_MM_DD
-            current_date = timezone.now().strftime('%Y_%m_%d')
-            
-            # Формируем имя папки: uuid_ts_дата
-            folder_name = f"{self.rnd.uuid}_ts_{current_date}"
-            
-            # Формируем полный путь
-            return os.path.join(
-                str(self.rnd.uuid),           # UUID НИОКР
-                'technical_specifications',    # Папка для ТЗ
-                'ts',                         # Подпапка ts
-                folder_name,                  # Папка с датой
-                filename
-            )
-        else:
-            # Запасной путь, если НИОКР еще не установлен
-            current_date = timezone.now().strftime('%Y_%m_%d')
-            return os.path.join(
-                'temp',
-                'technical_specifications',
-                current_date,
-                filename
-            )
+        return UploadPathFactory.for_technical_specification(self, filename)
     
     rnd = models.ForeignKey(
         RnD,
@@ -510,13 +622,13 @@ class TechnicalSpecification(models.Model):
         help_text=_('НИОКР, к которому относится ТЗ')
     )
     
-    # Связь с документом (основным договором или доп. соглашением)
+    # Связь с договором (основным договором или доп. соглашением)
     contract_document = models.ForeignKey(
         Contract,
         on_delete=models.PROTECT,
-        verbose_name=_('Документ-основание'),
+        verbose_name=_('Договор-основание'),
         related_name='technical_specifications',
-        help_text=_('Документ, которым утверждено ТЗ (договор или доп. соглашение)')
+        help_text=_('Договор, которым утверждено ТЗ (договор или доп. соглашение)')
     )
     
     document = models.FileField(
@@ -552,10 +664,10 @@ class TechnicalSpecification(models.Model):
     
     def clean(self):
         """Валидация ТЗ."""
-        # Проверка, что документ относится к тому же основному договору, что и НИОКР
+        # Проверка, что договор относится к тому же основному договору, что и НИОКР
         if self.rnd and self.contract_document:
             if self.contract_document.is_main_contract:
-                # Если документ - основной договор
+                # Если договор - основной договор
                 if self.contract_document != self.rnd.contract:
                     raise ValidationError({
                         'contract_document': _(
@@ -563,7 +675,7 @@ class TechnicalSpecification(models.Model):
                         )
                     })
             else:
-                # Если документ - доп. соглашение
+                # Если договор - доп. соглашение
                 if self.contract_document.main_contract != self.rnd.contract:
                     raise ValidationError({
                         'contract_document': _(
@@ -591,12 +703,12 @@ class TechnicalSpecification(models.Model):
     
     @property
     def document_type(self):
-        """Тип документа-основания."""
+        """Тип договора-основания."""
         return self.contract_document.type.short_name
     
     @property
     def document_number(self):
-        """Номер документа-основания."""
+        """Номер договора-основания."""
         return self.contract_document.number
     
     @property
@@ -757,6 +869,15 @@ def update_rnd_status_on_contract_status_change(sender, instance, created, **kwa
                     update_fields=['status', 'last_contract_status']
                 )
 
+@receiver(post_save, sender=Contract)
+def ensure_main_contract_integrity(sender, instance, created, **kwargs):
+    """
+    Гарантируем целостность ссылок main_contract после сохранения.
+    """
+    if not instance.type.is_supplementary and instance.main_contract != instance:
+        # Если это основной договор, но main_contract не ссылается на себя
+        instance.main_contract = instance
+        instance.save(update_fields=['main_contract'])
 
 def update_all_rnd_statuses_for_contract(contract_id):
     """

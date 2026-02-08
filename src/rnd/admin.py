@@ -27,25 +27,36 @@ class SupplementaryAgreementInline(admin.TabularInline):
     
     def get_queryset(self, request):
         """Показываем только доп. соглашения."""
-        return super().get_queryset(request).filter(type__is_supplementary=True)
+        qs = super().get_queryset(request)
+        return qs.filter(type__is_supplementary=True)
     
     def get_formset(self, request, obj=None, **kwargs):
         """Настраиваем форму для inline."""
         formset = super().get_formset(request, obj, **kwargs)
         
-        if obj:
+        if obj and obj.pk:  # Проверяем, что объект существует и сохранен
             # Ограничиваем выбор типа только доп. соглашениями для этого договора
             supplementary_types = ContractType.objects.filter(
                 is_supplementary=True,
                 parent_type=obj.type
             )
-            formset.form.base_fields['type'].queryset = supplementary_types
+            
+            # Проверяем, существует ли поле 'type' в форме
+            if 'type' in formset.form.base_fields:
+                formset.form.base_fields['type'].queryset = supplementary_types
             
             # Автоматически устанавливаем основной договор
-            formset.form.base_fields['main_contract'].initial = obj
-            formset.form.base_fields['main_contract'].widget = forms.HiddenInput()
+            if 'main_contract' in formset.form.base_fields:
+                formset.form.base_fields['main_contract'].initial = obj
+                formset.form.base_fields['main_contract'].widget = forms.HiddenInput()
         
         return formset
+    
+    def has_add_permission(self, request, obj=None):
+        """Разрешаем добавление только для сохраненных основных договоров."""
+        if obj and obj.pk and not obj.type.is_supplementary:
+            return True
+        return False
 
 
 class ContractForm(forms.ModelForm):
@@ -56,11 +67,22 @@ class ContractForm(forms.ModelForm):
         fields = '__all__'
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),
+            'main_contract': forms.HiddenInput(),  # Всегда скрываем, логика в модели
         }
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
+        # Устанавливаем начальное значение для main_contract
+        if self.instance and self.instance.pk:
+            if self.instance.type and not self.instance.type.is_supplementary:
+                # Для основных договоров устанавливаем ссылку на себя
+                self.initial['main_contract'] = self.instance
+        else:
+            # Для новых объектов скрываем поле и делаем необязательным
+            self.fields['main_contract'].required = False
+            self.fields['main_contract'].widget = forms.HiddenInput()
+            
         # Динамически настраиваем поле type
         if self.instance and self.instance.pk:
             if self.instance.type and self.instance.type.is_supplementary:
@@ -73,13 +95,6 @@ class ContractForm(forms.ModelForm):
                 self.fields['type'].queryset = ContractType.objects.filter(
                     is_supplementary=False
                 )
-        
-        # Настраиваем поле main_contract
-        if self.instance and self.instance.pk and self.instance.type and not self.instance.type.is_supplementary:
-            # Для основных договоров скрываем поле main_contract
-            self.fields['main_contract'].widget = forms.HiddenInput()
-            self.fields['main_contract'].required = False
-
 
 @admin.register(ContractType)
 class ContractTypeAdmin(admin.ModelAdmin):
@@ -260,9 +275,9 @@ class ContractAdmin(admin.ModelAdmin):
         return count
     related_documents_count.short_description = _('Доп. соглашений')
     
-    def get_inlines(self, request, obj):
-        """Показываем inline только для основных договоров."""
-        if obj and not obj.type.is_supplementary:
+    def get_inlines(self, request, obj=None):
+        """Показываем inline только для сохраненных основных договоров."""
+        if obj and obj.pk and not obj.type.is_supplementary:
             return [SupplementaryAgreementInline]
         return []
     
@@ -338,11 +353,34 @@ class ContractAdmin(admin.ModelAdmin):
             request, object_id, form_url, extra_context=extra_context
         )
     
+    def save_model(self, request, obj, form, change):
+        """
+        Переопределяем сохранение модели в админке.
+        """
+        if not change:  # Если это создание нового объекта
+            # Временно убираем main_contract для сохранения
+            main_contract = obj.main_contract
+            obj.main_contract = None
+            
+            # Сохраняем объект
+            super().save_model(request, obj, form, change)
+            
+            # Для основных договоров устанавливаем ссылку на себя
+            if not obj.type.is_supplementary:
+                obj.main_contract = obj
+                obj.save(update_fields=['main_contract'])
+            else:
+                # Для доп. соглашений возвращаем сохраненный main_contract
+                obj.main_contract = main_contract
+                obj.save(update_fields=['main_contract'])
+        else:
+            # Для существующих объектов сохраняем как обычно
+            super().save_model(request, obj, form, change)
+    
     class Media:
         css = {
             'all': ('css/admin_contract.css',)
         }
-
 
 @admin.register(RnDType)
 class RnDTypeAdmin(admin.ModelAdmin):
