@@ -130,7 +130,7 @@ class ContractAdmin(admin.ModelAdmin):
     form = ContractForm
     list_display = (
         'number', 'name', 'type_display', 'signed_date', 'effective_date',
-        'status_display', 'is_supplementary_display', 'related_documents_count'
+        'status_display', 'is_supplementary_display', 'document_quick_view', 'related_documents_count'
     )
     list_filter = ('type', 'status', ('type__is_supplementary', admin.BooleanFieldListFilter), 'signed_date')
     search_fields = ('number', 'name', 'description')
@@ -230,6 +230,17 @@ class ContractAdmin(admin.ModelAdmin):
                  name='rnd_contract_sync_rnd_status'),
         ]
         return custom_urls + urls
+    
+    def document_quick_view(self, obj):
+        """Минимальная версия - просто ссылка."""
+        if obj.document and obj.document.url:
+            return format_html(
+                '<a href="{}" target="_blank" style="color: #2196F3; font-weight: bold;">📄</a>',
+                obj.document.url
+            )
+        return "-"
+    document_quick_view.short_description = _('Договор')
+    document_quick_view.allow_tags = True
     
     def sync_rnd_status(self, request, object_id):
         updated_count = update_all_rnd_statuses_for_contract(object_id)
@@ -382,7 +393,7 @@ class RnDAdmin(admin.ModelAdmin):
                 <strong>{}</strong><br>
                 <strong>{}:</strong> {}<br>
                 <strong>{}:</strong> {}<br>
-                <strong>{}:</strong> {}<br>
+                <strong>{}:</strong> {}<br><br>
                 <a href="{}" class="button" style="margin-top: 5px;">{}</a>
             </div>
             ''',
@@ -398,7 +409,7 @@ class RnDAdmin(admin.ModelAdmin):
 @admin.register(TechnicalSpecification)
 class TechnicalSpecificationAdmin(admin.ModelAdmin):
     list_display = ('rnd_uuid_display', 'version_display', 'contract_document_link', 'is_active_display', 
-                   'file_info', 'uploaded_at')
+                   'ts_file_quick_view', 'uploaded_at')
     list_filter = ('is_active', ('contract_document__type__is_supplementary', admin.BooleanFieldListFilter), 
                   'contract_document__main_contract')
     search_fields = ('rnd__uuid', 'rnd__code', 'rnd__title', 'contract_document__number', 'description')
@@ -517,6 +528,17 @@ class TechnicalSpecificationAdmin(admin.ModelAdmin):
             return 'Excel'
         else:
             return _('Другой')
+    
+    def ts_file_quick_view(self, obj):
+        """Быстрый просмотр файла ТЗ в списке."""
+        if obj.document and obj.document.url:
+            return format_html(
+                '<a href="{}" target="_blank" style="color: #2196F3; font-weight: bold;">📋</a>',
+                obj.document.url
+            )
+        return "-"
+    ts_file_quick_view.short_description = _('Техническое задание')
+    ts_file_quick_view.allow_tags = True
 
 
 @admin.register(RnDTask)
